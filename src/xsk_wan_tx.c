@@ -57,7 +57,7 @@ int wan_port_init(struct wan_port *port, const struct wan_config *cfg, uint32_t 
     struct xsk_socket_config sock_cfg = {
         .rx_size = ring_size,
         .tx_size = ring_size,
-        .libbpf_flags = 0,
+        .libbpf_flags = XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD,
         .xdp_flags = xdp_flags,
         .bind_flags = bind_flags,
     };

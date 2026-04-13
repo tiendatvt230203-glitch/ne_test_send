@@ -58,7 +58,7 @@ int wan_port_init(struct wan_port *port, const struct wan_config *cfg, uint32_t 
         .rx_size = ring_size,
         .tx_size = ring_size,
         .libbpf_flags = XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD,
-        .bind_flags = XDP_ZEROCOPY | XDP_USE_NEED_WAKEUP,
+        .bind_flags = XDP_ZEROCOPY,
     };
 
     ret = xsk_socket__create(&port->xsk, port->ifname, 0, port->umem, &port->rx, &port->tx, &sock_cfg);
@@ -139,14 +139,16 @@ int wan_send_one(struct wan_port *port, const void *pkt, uint32_t len,
     d->len = len;
     xsk_ring_prod__submit(&port->tx, 1);
     port->tx_submit_ok++;
-    int rc = sendto(xsk_socket__fd(port->xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
-    if (rc >= 0) {
-        port->tx_kick_ok++;
-    } else if (errno == EAGAIN || errno == EBUSY) {
-        port->tx_kick_eagain++;
-    } else {
-        port->tx_kick_err++;
-        port->tx_last_errno = errno;
+    if (xsk_ring_prod__needs_wakeup(&port->tx)) {
+        int rc = sendto(xsk_socket__fd(port->xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
+        if (rc >= 0) {
+            port->tx_kick_ok++;
+        } else if (errno == EAGAIN || errno == EBUSY) {
+            port->tx_kick_eagain++;
+        } else {
+            port->tx_kick_err++;
+            port->tx_last_errno = errno;
+        }
     }
 
     port->tx_packets++;

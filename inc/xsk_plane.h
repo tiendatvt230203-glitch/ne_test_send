@@ -81,7 +81,7 @@ int interface_recv(struct xsk_interface *iface, void **pkt_ptrs, uint32_t *pkt_l
 void interface_recv_release(struct xsk_interface *iface, uint64_t *addrs, int count);
 
 int wan_port_init(struct wan_port *port, const struct wan_config *cfg, uint32_t ring_size,
-                  uint32_t frame_size, uint32_t umem_mb);
+                  uint32_t frame_size, uint32_t umem_mb, uint32_t bind_flags, uint32_t xdp_flags);
 void wan_port_cleanup(struct wan_port *port);
 int wan_send_one(struct wan_port *port, const void *pkt, uint32_t len,
                  const uint8_t src_mac[ETH_ALEN], const uint8_t dst_mac[ETH_ALEN]);

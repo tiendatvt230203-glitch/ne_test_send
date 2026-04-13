@@ -35,12 +35,23 @@ static int libbpf_log_min(enum libbpf_print_level level, const char *fmt, va_lis
 int main(int argc, char **argv)
 {
     if (argc < 2) {
-        fprintf(stderr, "Usage: sudo %s <ingress_ifname> [bpf/xdp_redirect.o]\n", argv[0]);
+        fprintf(stderr, "Usage: sudo %s <ingress_ifname> [bpf/xdp_redirect.o] [zc|copy]\n", argv[0]);
         return 1;
     }
 
     const char *ifname = argv[1];
     const char *bpf_path = (argc >= 3) ? argv[2] : "bpf/xdp_redirect.o";
+    const char *mode = (argc >= 4) ? argv[3] : "zc";
+    uint32_t wan_bind_flags = 0;
+    uint32_t wan_xdp_flags = XDP_FLAGS_DRV_MODE;
+    if (strcmp(mode, "zc") == 0) {
+        wan_bind_flags = XDP_ZEROCOPY;
+    } else if (strcmp(mode, "copy") == 0) {
+        wan_bind_flags = XDP_COPY;
+    } else {
+        fprintf(stderr, "Invalid mode: %s (use zc or copy)\n", mode);
+        return 1;
+    }
 
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
@@ -81,7 +92,8 @@ int main(int argc, char **argv)
 
     struct wan_port wans[WAN_PORTS] = {0};
     for (int i = 0; i < WAN_PORTS; i++) {
-        if (wan_port_init(&wans[i], &wan_cfg[i], cfg.ring_size, cfg.frame_size, cfg.umem_mb) != 0) {
+        if (wan_port_init(&wans[i], &wan_cfg[i], cfg.ring_size, cfg.frame_size, cfg.umem_mb,
+                          wan_bind_flags, wan_xdp_flags) != 0) {
             fprintf(stderr, "wan_port_init failed: %s\n", wan_cfg[i].ifname);
             for (int j = 0; j < i; j++)
                 wan_port_cleanup(&wans[j]);
@@ -113,7 +125,8 @@ int main(int argc, char **argv)
         interface_recv_release(&ingress, addrs, n);
     }
 
-    printf("ingress rx %" PRIu64 " pkts %" PRIu64 " bytes\n", ingress.rx_packets, ingress.rx_bytes);
+    printf("mode %s ingress rx %" PRIu64 " pkts %" PRIu64 " bytes\n",
+           mode, ingress.rx_packets, ingress.rx_bytes);
     for (int i = 0; i < WAN_PORTS; i++) {
         printf("wan[%d] %s tx %" PRIu64 " pkts %" PRIu64 " bytes submit_ok %" PRIu64
                " submit_fail %" PRIu64 " kick_ok %" PRIu64 " kick_eagain %" PRIu64

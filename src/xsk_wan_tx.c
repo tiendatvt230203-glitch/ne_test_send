@@ -22,7 +22,7 @@ static void wan_reclaim_completions(struct wan_port *port)
 }
 
 int wan_port_init(struct wan_port *port, const struct wan_config *cfg, uint32_t ring_size,
-                  uint32_t frame_size, uint32_t umem_mb)
+                  uint32_t frame_size, uint32_t umem_mb, uint32_t bind_flags, uint32_t xdp_flags)
 {
     memset(port, 0, sizeof(*port));
     strncpy(port->ifname, cfg->ifname, IF_NAMESIZE - 1);
@@ -57,8 +57,9 @@ int wan_port_init(struct wan_port *port, const struct wan_config *cfg, uint32_t 
     struct xsk_socket_config sock_cfg = {
         .rx_size = ring_size,
         .tx_size = ring_size,
-        .libbpf_flags = XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD,
-        .bind_flags = XDP_ZEROCOPY,
+        .libbpf_flags = 0,
+        .xdp_flags = xdp_flags,
+        .bind_flags = bind_flags,
     };
 
     ret = xsk_socket__create(&port->xsk, port->ifname, 0, port->umem, &port->rx, &port->tx, &sock_cfg);

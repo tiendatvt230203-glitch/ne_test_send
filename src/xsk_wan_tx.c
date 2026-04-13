@@ -18,6 +18,7 @@ static void wan_reclaim_completions(struct wan_port *port)
             port->free_addrs[port->free_count++] = *xsk_ring_cons__comp_addr(&port->comp, idx + i);
     }
     xsk_ring_cons__release(&port->comp, n);
+    port->tx_comp_ok += (uint64_t)n;
 }
 
 int wan_port_init(struct wan_port *port, const struct wan_config *cfg, uint32_t ring_size,
@@ -129,6 +130,7 @@ int wan_send_one(struct wan_port *port, const void *pkt, uint32_t len,
     uint32_t idx = 0;
     if (xsk_ring_prod__reserve(&port->tx, 1, &idx) != 1) {
         port->free_addrs[port->free_count++] = addr;
+        port->tx_submit_fail++;
         return -1;
     }
 
@@ -136,7 +138,16 @@ int wan_send_one(struct wan_port *port, const void *pkt, uint32_t len,
     d->addr = addr;
     d->len = len;
     xsk_ring_prod__submit(&port->tx, 1);
-    (void)sendto(xsk_socket__fd(port->xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
+    port->tx_submit_ok++;
+    int rc = sendto(xsk_socket__fd(port->xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
+    if (rc >= 0) {
+        port->tx_kick_ok++;
+    } else if (errno == EAGAIN || errno == EBUSY) {
+        port->tx_kick_eagain++;
+    } else {
+        port->tx_kick_err++;
+        port->tx_last_errno = errno;
+    }
 
     port->tx_packets++;
     port->tx_bytes += len;

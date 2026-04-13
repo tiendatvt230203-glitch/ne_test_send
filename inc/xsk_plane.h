@@ -61,6 +61,13 @@ struct wan_port {
 
     uint64_t tx_packets;
     uint64_t tx_bytes;
+    uint64_t tx_submit_ok;
+    uint64_t tx_submit_fail;
+    uint64_t tx_kick_ok;
+    uint64_t tx_kick_eagain;
+    uint64_t tx_kick_err;
+    uint64_t tx_comp_ok;
+    int tx_last_errno;
 };
 
 int interface_init_local(struct xsk_interface *iface, const struct local_config *local_cfg,

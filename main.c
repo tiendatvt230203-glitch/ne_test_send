@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 
 #define MAX_BATCH 32
 
@@ -114,8 +115,13 @@ int main(int argc, char **argv)
 
     printf("ingress rx %" PRIu64 " pkts %" PRIu64 " bytes\n", ingress.rx_packets, ingress.rx_bytes);
     for (int i = 0; i < WAN_PORTS; i++) {
-        printf("wan[%d] %s tx %" PRIu64 " pkts %" PRIu64 " bytes\n", i, wan_cfg[i].ifname,
-               wans[i].tx_packets, wans[i].tx_bytes);
+        printf("wan[%d] %s tx %" PRIu64 " pkts %" PRIu64 " bytes submit_ok %" PRIu64
+               " submit_fail %" PRIu64 " kick_ok %" PRIu64 " kick_eagain %" PRIu64
+               " kick_err %" PRIu64 " comp_ok %" PRIu64 " last_errno %d (%s)\n",
+               i, wan_cfg[i].ifname, wans[i].tx_packets, wans[i].tx_bytes, wans[i].tx_submit_ok,
+               wans[i].tx_submit_fail, wans[i].tx_kick_ok, wans[i].tx_kick_eagain,
+               wans[i].tx_kick_err, wans[i].tx_comp_ok, wans[i].tx_last_errno,
+               wans[i].tx_last_errno ? strerror(wans[i].tx_last_errno) : "ok");
         wan_port_cleanup(&wans[i]);
     }
     printf("tx_fail %" PRIu64 "\n", tx_fail);

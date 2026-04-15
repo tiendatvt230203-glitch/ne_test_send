@@ -8,7 +8,8 @@ BPF_SRC := bpf/xdp_redirect.c
 BPF_OBJ := bpf/xdp_redirect.o
 
 APP := ne-sniff
-SRCS := main.c src/xsk_common.c src/xsk_local.c src/xsk_rx.c src/xsk_wan_tx.c
+SRCS := main.c src/ne_app.c src/netdev_xdp_link.c src/ingress_afxdp_init.c src/ingress_afxdp_recv.c \
+	src/wan_afxdp_tx.c src/wan_packet_out.c
 OBJS := $(SRCS:.c=.o)
 
 BPF_CFLAGS := -O2 -g -Wall -Wextra -target bpf \

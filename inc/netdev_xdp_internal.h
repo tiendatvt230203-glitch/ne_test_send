@@ -1,7 +1,7 @@
-#ifndef XSK_PLANE_INTERNAL_H
-#define XSK_PLANE_INTERNAL_H
+#ifndef NETDEV_XDP_INTERNAL_H
+#define NETDEV_XDP_INTERNAL_H
 
-#include "xsk_plane.h"
+#include "ingress_afxdp.h"
 #include <linux/types.h>
 #include <stddef.h>
 

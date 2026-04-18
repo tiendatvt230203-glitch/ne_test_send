@@ -119,13 +119,11 @@ static int fq_replenish(struct ne_afxdp_pair *p, struct ne_zc_port *prt, struct 
 		return -1;
 	}
 	for (uint32_t j = 0; j < n; j++)
-		*xsk_ring_prod__fill_addr(&prt->fq, idx + j) = (uint32_t)tmp[j];
+		*xsk_ring_prod__fill_addr(&prt->fq, idx + j) = tmp[j];
 	xsk_ring_prod__submit(&prt->fq, n);
 
-	if (xsk_ring_prod__needs_wakeup(&prt->fq)) {
-		struct pollfd pfd = {.fd = xsk_socket__fd(xsk), .events = POLLOUT};
-		(void)poll(&pfd, 1, 0);
-	}
+	if (xsk_ring_prod__needs_wakeup(&prt->fq))
+		(void)sendto(xsk_socket__fd(xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
 	pthread_mutex_unlock(fq_lock);
 	return 0;
 }

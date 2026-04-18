@@ -147,7 +147,7 @@ static void destroy_merged_rings(struct ne_pipeline *pl, int have_w_to_wan, int 
 }
 
 int ne_pipeline_run(const char *ingress_if, const char *wan_if, const char *ingress_bpf,
-		      const char *wan_bpf)
+		      const char *wan_bpf, int af_xdp_copy)
 {
 	struct ne_pipeline pl;
 	memset(&pl, 0, sizeof(pl));
@@ -181,6 +181,7 @@ int ne_pipeline_run(const char *ingress_if, const char *wan_if, const char *ingr
 	zcfg.frame_size = NE_LOCAL_FRAME;
 	zcfg.bpf_ing = ingress_bpf;
 	zcfg.bpf_wan = wan_bpf;
+	zcfg.af_xdp_copy = af_xdp_copy;
 
 	if (ne_afxdp_pair_open(&pl.zc, &zcfg) != 0)
 		goto fail_rings;

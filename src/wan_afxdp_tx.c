@@ -55,12 +55,12 @@ int ne_wan_tx_open(struct ne_wan_tx *w, const char *ifname, uint32_t ring_size, 
 		.rx_size = ring_size,
 		.tx_size = ring_size,
 		.libbpf_flags = XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD,
-		.bind_flags = XDP_ZEROCOPY | XDP_USE_NEED_WAKEUP,
+		.bind_flags = XDP_COPY | XDP_USE_NEED_WAKEUP,
 	};
 
 	int ret = xsk_socket__create(&w->xsk, w->ifname, 0, w->umem, &w->rx, &w->tx, &scfg);
 	if (ret) {
-		fprintf(stderr, "%s: xsk_socket__create (zero-copy) failed: %d (%s)\n", ifname, ret,
+		fprintf(stderr, "%s: xsk_socket__create failed: %d (%s)\n", ifname, ret,
 			ret < 0 ? strerror(-ret) : "non-negative error");
 		xsk_umem__delete(w->umem);
 		w->umem = NULL;

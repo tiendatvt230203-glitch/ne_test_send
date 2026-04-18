@@ -83,7 +83,7 @@ int interface_init_local(struct xsk_interface *iface, const struct local_config 
 		.rx_size = local_cfg->ring_size,
 		.tx_size = local_cfg->ring_size,
 		.libbpf_flags = XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD,
-		.bind_flags = XDP_ZEROCOPY | XDP_USE_NEED_WAKEUP,
+		.bind_flags = XDP_COPY | XDP_USE_NEED_WAKEUP,
 	};
 
 	int ret = posix_memalign(&iface->bufs, getpagesize(), local_umem_size);
@@ -108,7 +108,7 @@ int interface_init_local(struct xsk_interface *iface, const struct local_config 
 	ret = xsk_socket__create(&iface->xsk, iface->ifname, qid, iface->umem, &iface->rx, &iface->tx,
 				 &sock_cfg);
 	if (ret) {
-		fprintf(stderr, "xsk_socket__create (zero-copy) failed: %d (%s)\n", ret,
+		fprintf(stderr, "xsk_socket__create failed: %d (%s)\n", ret,
 			ret < 0 ? strerror(-ret) : "non-negative error");
 		xsk_umem__delete(iface->umem);
 		munlock(iface->bufs, local_umem_size);
@@ -187,6 +187,8 @@ void interface_cleanup(struct xsk_interface *iface)
 		munlock(iface->bufs, iface->umem_size);
 		free(iface->bufs);
 	}
+	free(iface->tx_free);
+	iface->tx_free = NULL;
 
 	memset(iface, 0, sizeof(*iface));
 }

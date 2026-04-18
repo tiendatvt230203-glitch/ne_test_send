@@ -7,10 +7,20 @@ ARCH := $(shell uname -m | sed -e 's/x86_64/x86/' -e 's/aarch64/arm64/')
 BPF_SRC := bpf/xdp_redirect.c
 BPF_OBJ := bpf/xdp_redirect.o
 
+BPF_WAN_SRC := bpf/xdp_wan_redirect_ne.c
+BPF_WAN_OBJ := bpf/xdp_wan_redirect_ne.o
+
 APP := ne-sniff
 SRCS := main.c src/ne_app.c src/netdev_xdp_link.c src/ingress_afxdp_init.c src/ingress_afxdp_recv.c \
-	src/wan_afxdp_tx.c src/wan_packet_out.c
+	src/ingress_afxdp_send.c src/wan_afxdp_tx.c src/wan_packet_out.c
 OBJS := $(SRCS:.c=.o)
+
+APP_PIPELINE := ne-pipeline
+PIPELINE_SRCS := pipeline_main.c src/ne_pipeline.c src/ne_pkt_ring.c src/ne_pkt_pool.c \
+	src/ne_flow_hash.c src/ne_wan_iface.c src/netdev_xdp_link.c src/ingress_afxdp_init.c \
+	src/ingress_afxdp_recv.c src/ingress_afxdp_send.c
+PIPELINE_OBJS := $(PIPELINE_SRCS:.c=.o)
+ALL_OBJS := $(sort $(OBJS) $(PIPELINE_OBJS))
 
 BPF_CFLAGS := -O2 -g -Wall -Wextra -target bpf \
 	-D__TARGET_ARCH_$(ARCH)
@@ -31,17 +41,23 @@ endif
 
 .PHONY: all clean
 
-all: $(BPF_OBJ) $(APP)
+all: $(BPF_OBJ) $(BPF_WAN_OBJ) $(APP) $(APP_PIPELINE)
 
 $(BPF_OBJ): $(BPF_SRC)
 	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 
-$(OBJS): %.o: %.c
+$(BPF_WAN_OBJ): $(BPF_WAN_SRC)
+	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
+
+$(ALL_OBJS): %.o: %.c
 	$(CC) $(USR_CFLAGS) -c $< -o $@
 
 $(APP): $(OBJS)
 	$(CC) -o $@ $(OBJS) $(USR_LIBS)
 
+$(APP_PIPELINE): $(PIPELINE_OBJS) $(BPF_OBJ) $(BPF_WAN_OBJ)
+	$(CC) -o $@ $(PIPELINE_OBJS) $(USR_LIBS)
+
 clean:
-	rm -f $(APP) $(OBJS) $(BPF_OBJ)
+	rm -f $(APP) $(APP_PIPELINE) $(ALL_OBJS) $(BPF_OBJ) $(BPF_WAN_OBJ)
 

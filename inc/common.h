@@ -32,5 +32,11 @@
 #ifndef XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD
 #define XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD (1U << 0)
 #endif
+#ifndef XDP_COPY
+#define XDP_COPY (1U << 1)
+#endif
+#ifndef XDP_ZEROCOPY
+#define XDP_ZEROCOPY (1U << 2)
+#endif
 
 #endif

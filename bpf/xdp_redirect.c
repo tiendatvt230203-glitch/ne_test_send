@@ -34,33 +34,27 @@ int xdp_redirect_prog(struct xdp_md *ctx)
         nh = (void *)((__u8 *)nh + 4);
     }
 
-    if (proto == bpf_htons(ETH_P_ARP_VAL)) {
-        bpf_printk("NE: PASS ARP\n");
+    if (proto == bpf_htons(ETH_P_ARP_VAL))
         return XDP_PASS;
-    }
 
-    if (proto != bpf_htons(ETH_P_IP)) {
-        bpf_printk("NE: PASS non-IP eth=0x%x\n", bpf_ntohs(proto));
+    if (proto != bpf_htons(ETH_P_IP))
         return XDP_PASS;
-    }
 
     struct iphdr *ip = nh;
     if ((void *)(ip + 1) > data_end || ip->ihl < 5)
         return XDP_PASS;
 
-    if (ip->protocol == IPPROTO_ICMP) {
-        bpf_printk("NE: PASS ICMP\n");
+    if (ip->protocol == IPPROTO_ICMP)
         return XDP_PASS;
-    }
+
+    if (ip->protocol != IPPROTO_TCP && ip->protocol != IPPROTO_UDP)
+        return XDP_PASS;
 
     __u32 qid = 0;
     void *xs = bpf_map_lookup_elem(&xsks_map, &qid);
-    if (!xs) {
-        bpf_printk("NE: PASS xsks_map[0] empty (run ne-sniff)\n");
+    if (!xs)
         return XDP_PASS;
-    }
 
-    bpf_printk("NE: REDIRECT q0 proto=%u ihl=%u\n", ip->protocol, ip->ihl);
     return bpf_redirect_map(&xsks_map, qid, 0);
 }
 

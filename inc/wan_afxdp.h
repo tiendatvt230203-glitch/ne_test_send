@@ -4,10 +4,12 @@
 #include "ingress_afxdp.h"
 
 #define NE_WAN_COUNT 3
-#define NE_CPU_RX 0
-#define NE_CPU_TX 11
-#define NE_CPU_WORKER_LO 2
-#define NE_CPU_WORKER_HI 9
+#define NE_CPU_INGRESS 0u
+#define NE_CPU_WAN     11u
+#define NE_CPU_WORKER_FIRST 1u
+#define NE_CPU_WORKER_LAST  10u
+#define NE_CPU_RX NE_CPU_INGRESS
+#define NE_CPU_TX NE_CPU_WAN
 
 struct ne_wan_tx {
 	char ifname[IF_NAMESIZE];

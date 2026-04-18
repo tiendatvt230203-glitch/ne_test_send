@@ -22,7 +22,7 @@ static int fq_push_one(struct ne_zc_port *port, struct xsk_socket *xsk, uint64_t
 		if (r != 1)
 			return -1;
 	}
-	*xsk_ring_prod__fill_addr(&port->fq, idx) = (uint32_t)addr;
+	*xsk_ring_prod__fill_addr(&port->fq, idx) = addr;
 	xsk_ring_prod__submit(&port->fq, 1);
 	return 0;
 }

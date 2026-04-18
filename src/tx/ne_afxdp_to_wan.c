@@ -1,6 +1,7 @@
 #include "../../inc/ne_afxdp_pair.h"
 #include "../../inc/ne_afxdp_fq_pool.h"
 
+#include <linux/if_xdp.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -20,12 +21,12 @@ int ne_afxdp_tx_wan(struct ne_afxdp_pair *p, uint64_t addr, uint32_t len)
 	}
 
 	struct xdp_desc *d = xsk_ring_prod__tx_desc(&p->wan.tx, tx_idx);
-	d->addr = (uint32_t)addr;
+	d->addr = addr;
 	d->len = len;
+	d->options = 0;
 	xsk_ring_prod__submit(&p->wan.tx, 1);
 
-	if (xsk_ring_prod__needs_wakeup(&p->wan.tx))
-		(void)sendto(xsk_socket__fd(p->wan.xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
+	(void)sendto(xsk_socket__fd(p->wan.xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
 	p->wan.tx_packets++;
 	p->wan.tx_bytes += len;
 	return 0;

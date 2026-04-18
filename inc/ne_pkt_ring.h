@@ -6,7 +6,7 @@
 #include <stdint.h>
 
 struct ne_job {
-	uint32_t slot;
+	uint64_t umem_addr;
 	uint32_t len;
 	uint32_t conn_id;
 	uint8_t worker_idx;

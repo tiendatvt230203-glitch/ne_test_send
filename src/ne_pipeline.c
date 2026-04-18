@@ -2,15 +2,12 @@
 #define _GNU_SOURCE
 #endif
 
+#include "../inc/ne_afxdp_pair.h"
 #include "../inc/ne_defaults.h"
-#include "../inc/ne_flow_hash.h"
+#include "../inc/ne_flow.h"
 #include "../inc/ne_meta.h"
-#include "../inc/ne_pkt_pool.h"
 #include "../inc/ne_pkt_ring.h"
 #include "../inc/ne_pipeline.h"
-#include "../inc/ne_wan_iface.h"
-#include "../inc/ingress_afxdp.h"
-#include "../inc/wan_afxdp.h"
 
 #include <inttypes.h>
 #include <pthread.h>
@@ -25,11 +22,19 @@
 
 _Static_assert(NE_NUM_WORKERS == 10, "ne_pipeline expects 10 worker cores");
 
+#define NE_FLOW_BIND_CAP (1024u)
+
+struct ne_flow_slot {
+	uint32_t hash;
+	uint8_t worker_idx;
+	uint8_t in_use;
+};
+
 struct ne_pipeline {
 	volatile sig_atomic_t stop;
-	struct xsk_interface ingress;
-	struct xsk_interface wan;
-	struct ne_pkt_pool pool;
+	struct ne_afxdp_pair zc;
+	struct ne_flow_slot *flow_bind;
+	_Atomic uint32_t flow_bind_rr;
 	struct ne_ring r0_to_w[10];
 	struct ne_ring r11_to_w[10];
 	struct ne_ring w_to_wan;
@@ -39,12 +44,13 @@ struct ne_pipeline {
 	pthread_t th_wan;
 	pthread_t th_worker[10];
 
-	_Atomic uint64_t drops_no_slot;
 	_Atomic uint64_t drops_ring_ingress;
 	_Atomic uint64_t drops_ring_wan;
+	_Atomic uint64_t drops_wan_no_sender_tag;
 	_Atomic uint64_t drops_worker_wan;
 	_Atomic uint64_t drops_worker_cli;
 	_Atomic uint64_t wan_tx_fail;
+	_Atomic uint64_t ing_tx_fail;
 };
 
 static struct ne_pipeline *g_pl;
@@ -85,6 +91,35 @@ static void on_sig(int s)
 		g_pl->stop = 1;
 }
 
+static void *job_pkt(struct ne_pipeline *pl, uint64_t umem_addr)
+{
+	return xsk_umem__get_data(pl->zc.bufs, xsk_umem__add_offset_to_addr(umem_addr));
+}
+
+static uint8_t ne_flow_bind_worker(struct ne_pipeline *pl, uint32_t fh)
+{
+	struct ne_flow_slot *t = pl->flow_bind;
+	if (!t)
+		return ne_flow_worker_idx(fh);
+
+	const uint32_t mask = NE_FLOW_BIND_CAP - 1u;
+	uint32_t i = fh & mask;
+	for (uint32_t probe = 0; probe < 64u && probe < NE_FLOW_BIND_CAP; probe++) {
+		uint32_t s = (i + probe) & mask;
+		if (!t[s].in_use) {
+			uint8_t w = (uint8_t)(atomic_fetch_add_explicit(&pl->flow_bind_rr, 1u, memory_order_relaxed) %
+					      NE_NUM_WORKERS);
+			t[s].hash = fh;
+			t[s].worker_idx = w;
+			t[s].in_use = 1u;
+			return w;
+		}
+		if (t[s].hash == fh)
+			return t[s].worker_idx;
+	}
+	return ne_flow_worker_idx(fh);
+}
+
 static void *thread_ingress(void *arg)
 {
 	struct ne_pipeline *pl = arg;
@@ -97,41 +132,29 @@ static void *thread_ingress(void *arg)
 	while (!pl->stop) {
 		struct ne_job j;
 		while (!pl->stop && ne_ring_try_pop(&pl->w_to_client, &j) == 0) {
-			uint8_t *data = ne_pool_at(&pl->pool, j.slot);
-			if (data)
-				(void)interface_send(&pl->ingress, data, j.len);
-			ne_pool_release(&pl->pool, j.slot);
+			if (ne_afxdp_tx_ing(&pl->zc, j.umem_addr, j.len) != 0) {
+				atomic_fetch_add_explicit(&pl->ing_tx_fail, 1, memory_order_relaxed);
+				ne_afxdp_fq_return_wan(&pl->zc, j.umem_addr);
+			}
 		}
 
-		int n = interface_recv(&pl->ingress, ptrs, lens, addrs, NE_RECV_BATCH);
+		int n = ne_afxdp_recv_ing(&pl->zc, ptrs, lens, addrs, NE_RECV_BATCH);
 		if (n <= 0)
 			continue;
 
 		for (int i = 0; i < n; i++) {
-			uint32_t slot;
-			if (ne_pool_acquire(&pl->pool, &slot) != 0) {
-				atomic_fetch_add_explicit(&pl->drops_no_slot, (uint64_t)(n - i),
-							  memory_order_relaxed);
-				interface_recv_release(&pl->ingress, &addrs[i], n - i);
-				break;
-			}
-			uint8_t *dst = ne_pool_at(&pl->pool, slot);
-			memcpy(dst, ptrs[i], lens[i]);
-			interface_recv_release(&pl->ingress, &addrs[i], 1);
+			uint32_t fh = ne_flow_hash_from_packet(ptrs[i], lens[i]);
+			uint8_t widx = ne_flow_bind_worker(pl, fh);
 
-			uint32_t h = ne_flow_hash_ipv4(dst, lens[i]);
-			uint32_t cid = h ? h : 1u;
-			uint8_t widx = (uint8_t)(cid % NE_NUM_WORKERS);
-
-			struct ne_job job = {.slot = slot,
+			struct ne_job job = {.umem_addr = addrs[i],
 					     .len = lens[i],
-					     .conn_id = cid,
+					     .conn_id = fh,
 					     .worker_idx = widx,
 					     .part = 0,
 					     .dir = NE_DIR_TO_WAN,
 					     .pad = 0};
 			if (push_retry(&pl->r0_to_w[widx], &job, &pl->stop) != 0) {
-				ne_pool_release(&pl->pool, slot);
+				ne_afxdp_fq_return_ing(&pl->zc, addrs[i]);
 				atomic_fetch_add_explicit(&pl->drops_ring_ingress, 1, memory_order_relaxed);
 			}
 		}
@@ -151,33 +174,26 @@ static void *thread_wan(void *arg)
 	while (!pl->stop) {
 		struct ne_job j;
 		while (!pl->stop && ne_ring_try_pop(&pl->w_to_wan, &j) == 0) {
-			uint8_t *d = ne_pool_at(&pl->pool, j.slot);
-			if (d && ne_wan_iface_send(&pl->wan, d, j.len) != 0)
+			if (ne_afxdp_tx_wan(&pl->zc, j.umem_addr, j.len) != 0) {
 				atomic_fetch_add_explicit(&pl->wan_tx_fail, 1, memory_order_relaxed);
-			ne_pool_release(&pl->pool, j.slot);
+				ne_afxdp_fq_return_ing(&pl->zc, j.umem_addr);
+			}
 		}
 
-		int n = ne_wan_iface_recv(&pl->wan, ptrs, lens, addrs, NE_RECV_BATCH);
+		int n = ne_afxdp_recv_wan(&pl->zc, ptrs, lens, addrs, NE_RECV_BATCH);
 		if (n <= 0)
 			continue;
 
 		for (int i = 0; i < n; i++) {
-			uint32_t slot;
-			if (ne_pool_acquire(&pl->pool, &slot) != 0) {
-				atomic_fetch_add_explicit(&pl->drops_no_slot, (uint64_t)(n - i),
-							  memory_order_relaxed);
-				ne_wan_iface_recv_release(&pl->wan, &addrs[i], n - i);
-				break;
+			uint32_t cid = 0;
+			uint8_t widx = 0;
+			if (ne_wan_route_from_sender_tag(ptrs[i], lens[i], &cid, &widx) != 0) {
+				ne_afxdp_fq_return_wan(&pl->zc, addrs[i]);
+				atomic_fetch_add_explicit(&pl->drops_wan_no_sender_tag, 1, memory_order_relaxed);
+				continue;
 			}
-			uint8_t *dst = ne_pool_at(&pl->pool, slot);
-			memcpy(dst, ptrs[i], lens[i]);
-			ne_wan_iface_recv_release(&pl->wan, &addrs[i], 1);
 
-			uint32_t h = ne_flow_hash_ipv4(dst, lens[i]);
-			uint32_t cid = h ? h : 1u;
-			uint8_t widx = (uint8_t)(cid % NE_NUM_WORKERS);
-
-			struct ne_job job = {.slot = slot,
+			struct ne_job job = {.umem_addr = addrs[i],
 					     .len = lens[i],
 					     .conn_id = cid,
 					     .worker_idx = widx,
@@ -185,7 +201,7 @@ static void *thread_wan(void *arg)
 					     .dir = NE_DIR_TO_CLIENT,
 					     .pad = 0};
 			if (push_retry(&pl->r11_to_w[widx], &job, &pl->stop) != 0) {
-				ne_pool_release(&pl->pool, slot);
+				ne_afxdp_fq_return_wan(&pl->zc, addrs[i]);
 				atomic_fetch_add_explicit(&pl->drops_ring_wan, 1, memory_order_relaxed);
 			}
 		}
@@ -208,15 +224,24 @@ static void *thread_worker(void *arg)
 	while (!pl->stop) {
 		struct ne_job j;
 		if (ne_ring_try_pop(&pl->r0_to_w[idx], &j) == 0) {
+			if (j.len >= 14u + NE_WAN_FLOW_TAG_SIZE) {
+				uint8_t *pkt = job_pkt(pl, j.umem_addr);
+				uint16_t et = ((uint16_t)pkt[12] << 8) | pkt[13];
+				if (et == NE_WAN_SENDER_ETHTYPE)
+					ne_wan_flow_tag_pack(pkt + 14, j.conn_id, j.worker_idx);
+			}
 			if (push_retry(&pl->w_to_wan, &j, &pl->stop) != 0) {
-				ne_pool_release(&pl->pool, j.slot);
+				ne_afxdp_fq_return_ing(&pl->zc, j.umem_addr);
 				atomic_fetch_add_explicit(&pl->drops_worker_wan, 1, memory_order_relaxed);
 			}
 			continue;
 		}
 		if (ne_ring_try_pop(&pl->r11_to_w[idx], &j) == 0) {
-			if (push_retry(&pl->w_to_client, &j, &pl->stop) != 0) {
-				ne_pool_release(&pl->pool, j.slot);
+			uint32_t out_len = ne_flow_strip_before_local_tx(job_pkt(pl, j.umem_addr), j.len);
+			struct ne_job j2 = j;
+			j2.len = out_len;
+			if (push_retry(&pl->w_to_client, &j2, &pl->stop) != 0) {
+				ne_afxdp_fq_return_wan(&pl->zc, j.umem_addr);
 				atomic_fetch_add_explicit(&pl->drops_worker_cli, 1, memory_order_relaxed);
 			}
 			continue;
@@ -251,7 +276,6 @@ int ne_pipeline_run(const char *ingress_if, const char *wan_if, const char *ingr
 
 	int pairs_ok = 0;
 	int have_w_to_wan = 0, have_w_to_cli = 0;
-	int have_pool = 0;
 
 	for (int p = 0; p < 10; p++) {
 		if (ne_ring_init(&pl.r0_to_w[p], NE_PIPELINE_RING_CAP) != 0)
@@ -270,29 +294,23 @@ int ne_pipeline_run(const char *ingress_if, const char *wan_if, const char *ingr
 		goto fail_rings;
 	have_w_to_cli = 1;
 
-	if (ne_pool_init(&pl.pool, NE_PIPELINE_POOL_SLOTS, NE_LOCAL_FRAME) != 0)
+	struct ne_afxdp_cfg zcfg = {0};
+	strncpy(zcfg.ing_if, ingress_if, IF_NAMESIZE - 1);
+	strncpy(zcfg.wan_if, wan_if, IF_NAMESIZE - 1);
+	zcfg.umem_mb = NE_LOCAL_UMEM_MB;
+	zcfg.ring_size = NE_LOCAL_RING;
+	zcfg.batch_size = NE_LOCAL_BATCH;
+	zcfg.frame_size = NE_LOCAL_FRAME;
+	zcfg.bpf_ing = ingress_bpf;
+	zcfg.bpf_wan = wan_bpf;
+
+	if (ne_afxdp_pair_open(&pl.zc, &zcfg) != 0)
 		goto fail_rings;
-	have_pool = 1;
 
-	struct local_config cfg = {0};
-	cfg.umem_mb = NE_LOCAL_UMEM_MB;
-	cfg.ring_size = NE_LOCAL_RING;
-	cfg.batch_size = NE_LOCAL_BATCH;
-	cfg.frame_size = NE_LOCAL_FRAME;
-	strncpy(cfg.ifname, ingress_if, IF_NAMESIZE - 1);
-
-	if (interface_init_local(&pl.ingress, &cfg, ingress_bpf) != 0)
-		goto fail_pool;
-	if (ingress_tx_pool_init(&pl.ingress) != 0) {
-		interface_cleanup(&pl.ingress);
-		goto fail_pool;
-	}
-
-	strncpy(cfg.ifname, wan_if, IF_NAMESIZE - 1);
-	if (ne_wan_iface_open(&pl.wan, &cfg, wan_bpf) != 0) {
-		ingress_tx_pool_fini(&pl.ingress);
-		interface_cleanup(&pl.ingress);
-		goto fail_pool;
+	pl.flow_bind = calloc(NE_FLOW_BIND_CAP, sizeof(struct ne_flow_slot));
+	if (!pl.flow_bind) {
+		ne_afxdp_pair_close(&pl.zc);
+		goto fail_rings;
 	}
 
 	g_pl = &pl;
@@ -335,23 +353,23 @@ int ne_pipeline_run(const char *ingress_if, const char *wan_if, const char *ingr
 
 	fprintf(stderr,
 		"[ne-pipeline] ingress rx %" PRIu64 " b %" PRIu64 " tx %" PRIu64 " b %" PRIu64 "\n",
-		pl.ingress.rx_packets, pl.ingress.rx_bytes, pl.ingress.tx_packets, pl.ingress.tx_bytes);
+		pl.zc.ing.rx_packets, pl.zc.ing.rx_bytes, pl.zc.ing.tx_packets, pl.zc.ing.tx_bytes);
 	fprintf(stderr, "[ne-pipeline] wan rx %" PRIu64 " b %" PRIu64 " tx %" PRIu64 " b %" PRIu64 "\n",
-		pl.wan.rx_packets, pl.wan.rx_bytes, pl.wan.tx_packets, pl.wan.tx_bytes);
+		pl.zc.wan.rx_packets, pl.zc.wan.rx_bytes, pl.zc.wan.tx_packets, pl.zc.wan.tx_bytes);
 	fprintf(stderr,
-		"[ne-pipeline] drops: no_slot %" PRIu64 " ring0 %" PRIu64 " ring11 %" PRIu64
-		" w_wan %" PRIu64 " w_cli %" PRIu64 " wan_tx_fail %" PRIu64 "\n",
-		atomic_load_explicit(&pl.drops_no_slot, memory_order_relaxed),
+		"[ne-pipeline] drops ring0 %" PRIu64 " ring11 %" PRIu64 " wan_no_tag %" PRIu64
+		" w_wan %" PRIu64 " w_cli %" PRIu64 " wan_tx_fail %" PRIu64 " ing_tx_fail %" PRIu64 "\n",
 		atomic_load_explicit(&pl.drops_ring_ingress, memory_order_relaxed),
 		atomic_load_explicit(&pl.drops_ring_wan, memory_order_relaxed),
+		atomic_load_explicit(&pl.drops_wan_no_sender_tag, memory_order_relaxed),
 		atomic_load_explicit(&pl.drops_worker_wan, memory_order_relaxed),
 		atomic_load_explicit(&pl.drops_worker_cli, memory_order_relaxed),
-		atomic_load_explicit(&pl.wan_tx_fail, memory_order_relaxed));
+		atomic_load_explicit(&pl.wan_tx_fail, memory_order_relaxed),
+		atomic_load_explicit(&pl.ing_tx_fail, memory_order_relaxed));
 
-	ne_wan_iface_close(&pl.wan);
-	ingress_tx_pool_fini(&pl.ingress);
-	interface_cleanup(&pl.ingress);
-	ne_pool_fini(&pl.pool);
+	ne_afxdp_pair_close(&pl.zc);
+	free(pl.flow_bind);
+	pl.flow_bind = NULL;
 	for (int i = 0; i < 10; i++) {
 		ne_ring_destroy(&pl.r0_to_w[i]);
 		ne_ring_destroy(&pl.r11_to_w[i]);
@@ -372,13 +390,10 @@ fail_threads:
 		if (ok_wk[j])
 			pthread_join(pl.th_worker[j], NULL);
 	}
-	ne_wan_iface_close(&pl.wan);
-	ingress_tx_pool_fini(&pl.ingress);
-	interface_cleanup(&pl.ingress);
+	ne_afxdp_pair_close(&pl.zc);
+	free(pl.flow_bind);
+	pl.flow_bind = NULL;
 	g_pl = NULL;
-fail_pool:
-	if (have_pool)
-		ne_pool_fini(&pl.pool);
 fail_rings:
 	destroy_merged_rings(&pl, have_w_to_wan, have_w_to_cli);
 	destroy_worker_rings(&pl, pairs_ok);

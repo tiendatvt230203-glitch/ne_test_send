@@ -1,4 +1,3 @@
-# Userspace + BPF object cho xdp_redirect
 CLANG ?= clang
 CC ?= gcc
 
@@ -10,17 +9,11 @@ BPF_OBJ := bpf/xdp_redirect.o
 BPF_WAN_SRC := bpf/xdp_wan_redirect_ne.c
 BPF_WAN_OBJ := bpf/xdp_wan_redirect_ne.o
 
-APP := ne-sniff
-SRCS := main.c src/ne_app.c src/netdev_xdp_link.c src/ingress_afxdp_init.c src/ingress_afxdp_recv.c \
-	src/ingress_afxdp_send.c src/wan_afxdp_tx.c src/wan_packet_out.c
-OBJS := $(SRCS:.c=.o)
+APP := ne
 
-APP_PIPELINE := ne-pipeline
-PIPELINE_SRCS := pipeline_main.c src/ne_pipeline.c src/ne_pkt_ring.c src/ne_pkt_pool.c \
-	src/ne_flow_hash.c src/ne_wan_iface.c src/netdev_xdp_link.c src/ingress_afxdp_init.c \
-	src/ingress_afxdp_recv.c src/ingress_afxdp_send.c
-PIPELINE_OBJS := $(PIPELINE_SRCS:.c=.o)
-ALL_OBJS := $(sort $(OBJS) $(PIPELINE_OBJS))
+LINK_SRCS := main.c src/netdev_xdp_link.c src/ne_afxdp_pair.c src/ne_flow.c src/ne_pipeline.c src/ne_pkt_ring.c
+LINK_OBJS := $(LINK_SRCS:.c=.o)
+ALL_OBJS := $(LINK_OBJS)
 
 BPF_CFLAGS := -O2 -g -Wall -Wextra -target bpf \
 	-D__TARGET_ARCH_$(ARCH)
@@ -41,7 +34,7 @@ endif
 
 .PHONY: all clean
 
-all: $(BPF_OBJ) $(BPF_WAN_OBJ) $(APP) $(APP_PIPELINE)
+all: $(BPF_OBJ) $(BPF_WAN_OBJ) $(APP)
 
 $(BPF_OBJ): $(BPF_SRC)
 	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
@@ -52,12 +45,9 @@ $(BPF_WAN_OBJ): $(BPF_WAN_SRC)
 $(ALL_OBJS): %.o: %.c
 	$(CC) $(USR_CFLAGS) -c $< -o $@
 
-$(APP): $(OBJS)
-	$(CC) -o $@ $(OBJS) $(USR_LIBS)
-
-$(APP_PIPELINE): $(PIPELINE_OBJS) $(BPF_OBJ) $(BPF_WAN_OBJ)
-	$(CC) -o $@ $(PIPELINE_OBJS) $(USR_LIBS)
+$(APP): $(LINK_OBJS)
+	$(CC) -o $@ $(LINK_OBJS) $(USR_LIBS)
 
 clean:
-	rm -f $(APP) $(APP_PIPELINE) $(ALL_OBJS) $(BPF_OBJ) $(BPF_WAN_OBJ)
-
+	rm -f $(APP)
+	find . -name '*.o' -type f -delete

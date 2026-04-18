@@ -5,8 +5,6 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
-#define ETH_P_ARP_VAL 0x0806
-
 struct {
     __uint(type, BPF_MAP_TYPE_XSKMAP);
     __uint(max_entries, 64);
@@ -34,7 +32,7 @@ int xdp_redirect_prog(struct xdp_md *ctx)
         nh = (void *)((__u8 *)nh + 4);
     }
 
-    if (proto == bpf_htons(ETH_P_ARP_VAL))
+    if (proto == bpf_htons(ETH_P_ARP))
         return XDP_PASS;
 
     if (proto != bpf_htons(ETH_P_IP))

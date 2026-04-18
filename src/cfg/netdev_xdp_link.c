@@ -1,4 +1,4 @@
-#include "../inc/netdev_xdp_internal.h"
+#include "../../inc/netdev_xdp_internal.h"
 
 #include <bpf/libbpf.h>
 #include <errno.h>

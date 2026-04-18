@@ -1,4 +1,4 @@
-#include "../inc/ne_pkt_ring.h"
+#include "../../inc/ne_pkt_ring.h"
 #include <stdlib.h>
 #include <string.h>
 

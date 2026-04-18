@@ -1,6 +1,6 @@
-#include "../inc/ne_afxdp_pair.h"
-#include "../inc/ne_afxdp_zc_i.h"
-#include "../inc/netdev_xdp_internal.h"
+#include "../../inc/ne_afxdp_pair.h"
+#include "../../inc/ne_afxdp_zc_i.h"
+#include "../../inc/netdev_xdp_internal.h"
 
 #include <errno.h>
 #include <stdio.h>

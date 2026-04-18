@@ -2,10 +2,10 @@
 #define _GNU_SOURCE
 #endif
 
-#include "../inc/ne_pipeline_core.h"
-#include "../inc/ne_defaults.h"
-#include "../inc/ne_flow.h"
-#include "../inc/ne_pipeline.h"
+#include "../../inc/ne_pipeline_core.h"
+#include "../../inc/ne_defaults.h"
+#include "../../inc/ne_flow.h"
+#include "../../inc/ne_pipeline.h"
 
 #include <inttypes.h>
 #include <pthread.h>

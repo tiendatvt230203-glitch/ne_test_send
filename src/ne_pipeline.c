@@ -2,56 +2,21 @@
 #define _GNU_SOURCE
 #endif
 
-#include "../inc/ne_afxdp_pair.h"
+#include "../inc/ne_pipeline_core.h"
 #include "../inc/ne_defaults.h"
 #include "../inc/ne_flow.h"
-#include "../inc/ne_meta.h"
-#include "../inc/ne_pkt_ring.h"
 #include "../inc/ne_pipeline.h"
 
 #include <inttypes.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 
 _Static_assert(NE_NUM_WORKERS == 10, "ne_pipeline expects 10 worker cores");
-
-#define NE_FLOW_BIND_CAP (1024u)
-
-struct ne_flow_slot {
-	uint32_t hash;
-	uint8_t worker_idx;
-	uint8_t in_use;
-};
-
-struct ne_pipeline {
-	volatile sig_atomic_t stop;
-	struct ne_afxdp_pair zc;
-	struct ne_flow_slot *flow_bind;
-	_Atomic uint32_t flow_bind_rr;
-	struct ne_ring r0_to_w[10];
-	struct ne_ring r11_to_w[10];
-	struct ne_ring w_to_wan;
-	struct ne_ring w_to_client;
-
-	pthread_t th_ingress;
-	pthread_t th_wan;
-	pthread_t th_worker[10];
-
-	_Atomic uint64_t drops_ring_ingress;
-	_Atomic uint64_t drops_ring_wan;
-	_Atomic uint64_t drops_wan_no_sender_tag;
-	_Atomic uint64_t drops_worker_wan;
-	_Atomic uint64_t drops_worker_cli;
-	_Atomic uint64_t wan_tx_fail;
-	_Atomic uint64_t ing_tx_fail;
-};
 
 static struct ne_pipeline *g_pl;
 
@@ -61,17 +26,6 @@ static void pin_cpu(unsigned cpu)
 	CPU_ZERO(&s);
 	CPU_SET(cpu, &s);
 	(void)pthread_setaffinity_np(pthread_self(), sizeof(s), &s);
-}
-
-static int push_retry(struct ne_ring *r, const struct ne_job *j, volatile sig_atomic_t *stop)
-{
-	while (!*stop) {
-		if (ne_ring_try_push(r, j) == 0)
-			return 0;
-		struct timespec ts = {.tv_sec = 0, .tv_nsec = 500000L};
-		nanosleep(&ts, NULL);
-	}
-	return -1;
 }
 
 static void wake_all_rings(struct ne_pipeline *pl)
@@ -91,35 +45,6 @@ static void on_sig(int s)
 		g_pl->stop = 1;
 }
 
-static void *job_pkt(struct ne_pipeline *pl, uint64_t umem_addr)
-{
-	return xsk_umem__get_data(pl->zc.bufs, xsk_umem__add_offset_to_addr(umem_addr));
-}
-
-static uint8_t ne_flow_bind_worker(struct ne_pipeline *pl, uint32_t fh)
-{
-	struct ne_flow_slot *t = pl->flow_bind;
-	if (!t)
-		return ne_flow_worker_idx(fh);
-
-	const uint32_t mask = NE_FLOW_BIND_CAP - 1u;
-	uint32_t i = fh & mask;
-	for (uint32_t probe = 0; probe < 64u && probe < NE_FLOW_BIND_CAP; probe++) {
-		uint32_t s = (i + probe) & mask;
-		if (!t[s].in_use) {
-			uint8_t w = (uint8_t)(atomic_fetch_add_explicit(&pl->flow_bind_rr, 1u, memory_order_relaxed) %
-					      NE_NUM_WORKERS);
-			t[s].hash = fh;
-			t[s].worker_idx = w;
-			t[s].in_use = 1u;
-			return w;
-		}
-		if (t[s].hash == fh)
-			return t[s].worker_idx;
-	}
-	return ne_flow_worker_idx(fh);
-}
-
 static void *thread_ingress(void *arg)
 {
 	struct ne_pipeline *pl = arg;
@@ -130,34 +55,13 @@ static void *thread_ingress(void *arg)
 	uint64_t addrs[NE_RECV_BATCH];
 
 	while (!pl->stop) {
-		struct ne_job j;
-		while (!pl->stop && ne_ring_try_pop(&pl->w_to_client, &j) == 0) {
-			if (ne_afxdp_tx_ing(&pl->zc, j.umem_addr, j.len) != 0) {
-				atomic_fetch_add_explicit(&pl->ing_tx_fail, 1, memory_order_relaxed);
-				ne_afxdp_fq_return_wan(&pl->zc, j.umem_addr);
-			}
-		}
+		ne_pl_ingress_tx_client(pl);
 
 		int n = ne_afxdp_recv_ing(&pl->zc, ptrs, lens, addrs, NE_RECV_BATCH);
 		if (n <= 0)
 			continue;
 
-		for (int i = 0; i < n; i++) {
-			uint32_t fh = ne_flow_hash_from_packet(ptrs[i], lens[i]);
-			uint8_t widx = ne_flow_bind_worker(pl, fh);
-
-			struct ne_job job = {.umem_addr = addrs[i],
-					     .len = lens[i],
-					     .conn_id = fh,
-					     .worker_idx = widx,
-					     .part = 0,
-					     .dir = NE_DIR_TO_WAN,
-					     .pad = 0};
-			if (push_retry(&pl->r0_to_w[widx], &job, &pl->stop) != 0) {
-				ne_afxdp_fq_return_ing(&pl->zc, addrs[i]);
-				atomic_fetch_add_explicit(&pl->drops_ring_ingress, 1, memory_order_relaxed);
-			}
-		}
+		ne_pl_ingress_rx_workers(pl, n, ptrs, lens, addrs);
 	}
 	return NULL;
 }
@@ -172,39 +76,13 @@ static void *thread_wan(void *arg)
 	uint64_t addrs[NE_RECV_BATCH];
 
 	while (!pl->stop) {
-		struct ne_job j;
-		while (!pl->stop && ne_ring_try_pop(&pl->w_to_wan, &j) == 0) {
-			if (ne_afxdp_tx_wan(&pl->zc, j.umem_addr, j.len) != 0) {
-				atomic_fetch_add_explicit(&pl->wan_tx_fail, 1, memory_order_relaxed);
-				ne_afxdp_fq_return_ing(&pl->zc, j.umem_addr);
-			}
-		}
+		ne_pl_wan_tx_wan(pl);
 
 		int n = ne_afxdp_recv_wan(&pl->zc, ptrs, lens, addrs, NE_RECV_BATCH);
 		if (n <= 0)
 			continue;
 
-		for (int i = 0; i < n; i++) {
-			uint32_t cid = 0;
-			uint8_t widx = 0;
-			if (ne_wan_route_from_sender_tag(ptrs[i], lens[i], &cid, &widx) != 0) {
-				ne_afxdp_fq_return_wan(&pl->zc, addrs[i]);
-				atomic_fetch_add_explicit(&pl->drops_wan_no_sender_tag, 1, memory_order_relaxed);
-				continue;
-			}
-
-			struct ne_job job = {.umem_addr = addrs[i],
-					     .len = lens[i],
-					     .conn_id = cid,
-					     .worker_idx = widx,
-					     .part = 0,
-					     .dir = NE_DIR_TO_CLIENT,
-					     .pad = 0};
-			if (push_retry(&pl->r11_to_w[widx], &job, &pl->stop) != 0) {
-				ne_afxdp_fq_return_wan(&pl->zc, addrs[i]);
-				atomic_fetch_add_explicit(&pl->drops_ring_wan, 1, memory_order_relaxed);
-			}
-		}
+		ne_pl_wan_rx_workers(pl, n, ptrs, lens, addrs);
 	}
 	return NULL;
 }
@@ -225,22 +103,22 @@ static void *thread_worker(void *arg)
 		struct ne_job j;
 		if (ne_ring_try_pop(&pl->r0_to_w[idx], &j) == 0) {
 			if (j.len >= 14u + NE_WAN_FLOW_TAG_SIZE) {
-				uint8_t *pkt = job_pkt(pl, j.umem_addr);
+				uint8_t *pkt = ne_pl_job_pkt(pl, j.umem_addr);
 				uint16_t et = ((uint16_t)pkt[12] << 8) | pkt[13];
 				if (et == NE_WAN_SENDER_ETHTYPE)
 					ne_wan_flow_tag_pack(pkt + 14, j.conn_id, j.worker_idx);
 			}
-			if (push_retry(&pl->w_to_wan, &j, &pl->stop) != 0) {
+			if (ne_pl_ring_push_retry(&pl->w_to_wan, &j, &pl->stop) != 0) {
 				ne_afxdp_fq_return_ing(&pl->zc, j.umem_addr);
 				atomic_fetch_add_explicit(&pl->drops_worker_wan, 1, memory_order_relaxed);
 			}
 			continue;
 		}
 		if (ne_ring_try_pop(&pl->r11_to_w[idx], &j) == 0) {
-			uint32_t out_len = ne_flow_strip_before_local_tx(job_pkt(pl, j.umem_addr), j.len);
+			uint32_t out_len = ne_flow_strip_before_local_tx(ne_pl_job_pkt(pl, j.umem_addr), j.len);
 			struct ne_job j2 = j;
 			j2.len = out_len;
-			if (push_retry(&pl->w_to_client, &j2, &pl->stop) != 0) {
+			if (ne_pl_ring_push_retry(&pl->w_to_client, &j2, &pl->stop) != 0) {
 				ne_afxdp_fq_return_wan(&pl->zc, j.umem_addr);
 				atomic_fetch_add_explicit(&pl->drops_worker_cli, 1, memory_order_relaxed);
 			}
@@ -269,7 +147,7 @@ static void destroy_merged_rings(struct ne_pipeline *pl, int have_w_to_wan, int 
 }
 
 int ne_pipeline_run(const char *ingress_if, const char *wan_if, const char *ingress_bpf,
-		    const char *wan_bpf)
+		      const char *wan_bpf)
 {
 	struct ne_pipeline pl;
 	memset(&pl, 0, sizeof(pl));

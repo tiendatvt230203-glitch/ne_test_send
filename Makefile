@@ -11,7 +11,12 @@ BPF_WAN_OBJ := bpf/xdp_wan_redirect_ne.o
 
 APP := ne
 
-LINK_SRCS := main.c src/netdev_xdp_link.c src/ne_afxdp_pair.c src/ne_flow.c src/ne_pipeline.c src/ne_pkt_ring.c
+LINK_SRCS := main.c src/netdev_xdp_link.c \
+	src/rx/ne_afxdp_fq_pool.c src/rx/ne_afxdp_from_local.c src/rx/ne_afxdp_from_wan.c \
+	src/tx/ne_afxdp_to_local.c src/tx/ne_afxdp_to_wan.c \
+	src/ne_afxdp_pair.c src/ne_flow.c \
+	src/rx/ne_pipeline_core.c src/rx/ne_pipeline_rx.c src/tx/ne_pipeline_tx.c \
+	src/ne_pipeline.c src/ne_pkt_ring.c
 LINK_OBJS := $(LINK_SRCS:.c=.o)
 ALL_OBJS := $(LINK_OBJS)
 

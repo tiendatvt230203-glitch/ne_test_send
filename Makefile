@@ -6,12 +6,9 @@ ARCH := $(shell uname -m | sed -e 's/x86_64/x86/' -e 's/aarch64/arm64/')
 BPF_SRC := bpf/xdp_redirect.c
 BPF_OBJ := bpf/xdp_redirect.o
 
-BPF_WAN_SRC := bpf/xdp_wan_redirect_ne.c
-BPF_WAN_OBJ := bpf/xdp_wan_redirect_ne.o
-
 APP := ne
 
-LINK_SRCS := main.c src/ne_afxdp.c src/ne_threads.c
+LINK_SRCS := main.c src/ne_afxdp.c src/ne_run.c
 LINK_OBJS := $(LINK_SRCS:.c=.o)
 
 PKG_CONFIG ?= pkg-config
@@ -33,12 +30,9 @@ BPF_CFLAGS := -O2 -g -Wall -Wextra -target bpf \
 
 .PHONY: all clean
 
-all: $(BPF_OBJ) $(BPF_WAN_OBJ) $(APP)
+all: $(BPF_OBJ) $(APP)
 
 $(BPF_OBJ): $(BPF_SRC)
-	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
-
-$(BPF_WAN_OBJ): $(BPF_WAN_SRC)
 	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 
 $(LINK_OBJS): %.o: %.c inc/ne.h

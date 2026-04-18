@@ -6,7 +6,6 @@
 
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
-#include <inttypes.h>
 #include <linux/bpf.h>
 #include <linux/if_link.h>
 #include <poll.h>
@@ -224,15 +223,6 @@ void ne_afxdp_fq_return_ing(struct ne_afxdp_pair *p, uint64_t addr)
 	pthread_mutex_unlock(&p->ing_fq_lock);
 }
 
-void ne_afxdp_fq_return_wan(struct ne_afxdp_pair *p, uint64_t addr)
-{
-	if (!p->fq_locks_inited)
-		return;
-	pthread_mutex_lock(&p->wan_fq_lock);
-	(void)ne_afxdp_fq_fill_one(&p->wan, p->wan.xsk, addr);
-	pthread_mutex_unlock(&p->wan_fq_lock);
-}
-
 int ne_afxdp_recv_ing(struct ne_afxdp_pair *p, void **pkt_ptrs, uint32_t *pkt_lens, uint64_t *addrs,
 		      int max_pkts)
 {
@@ -263,84 +253,6 @@ int ne_afxdp_recv_ing(struct ne_afxdp_pair *p, void **pkt_ptrs, uint32_t *pkt_le
 	return rcvd;
 }
 
-int ne_afxdp_recv_wan(struct ne_afxdp_pair *p, void **pkt_ptrs, uint32_t *pkt_lens, uint64_t *addrs,
-		      int max_pkts)
-{
-	if (!p->wan.xsk)
-		return 0;
-	uint32_t idx_rx = 0;
-	int rcvd = xsk_ring_cons__peek(&p->wan.rx, max_pkts, &idx_rx);
-	if (rcvd == 0) {
-		struct pollfd pfd = {.fd = xsk_socket__fd(p->wan.xsk), .events = POLLIN};
-		if (poll(&pfd, 1, 1) <= 0)
-			return 0;
-		rcvd = xsk_ring_cons__peek(&p->wan.rx, max_pkts, &idx_rx);
-		if (rcvd == 0)
-			return 0;
-	}
-	for (int j = 0; j < rcvd; j++) {
-		const struct xdp_desc *desc = xsk_ring_cons__rx_desc(&p->wan.rx, idx_rx + j);
-		addrs[j] = desc->addr;
-		pkt_ptrs[j] = xsk_umem__get_data(p->bufs, xsk_umem__add_offset_to_addr(desc->addr));
-		pkt_lens[j] = desc->len;
-	}
-	xsk_ring_cons__release(&p->wan.rx, rcvd);
-	while (ne_afxdp_fq_replenish_all(p, &p->wan, p->wan.xsk, (uint32_t)rcvd, &p->wan_fq_lock) != 0)
-		sched_yield();
-	p->wan.rx_packets += (uint64_t)rcvd;
-	for (int j = 0; j < rcvd; j++)
-		p->wan.rx_bytes += pkt_lens[j];
-	return rcvd;
-}
-
-void ne_afxdp_rx_release_ing(struct ne_afxdp_pair *p, uint64_t *addrs, int count)
-{
-	if (!p->ing.xsk || !p->fq_locks_inited)
-		return;
-	pthread_mutex_lock(&p->ing_fq_lock);
-	for (int i = 0; i < count; i++)
-		(void)ne_afxdp_fq_fill_one(&p->ing, p->ing.xsk, addrs[i]);
-	pthread_mutex_unlock(&p->ing_fq_lock);
-}
-
-void ne_afxdp_rx_release_wan(struct ne_afxdp_pair *p, uint64_t *addrs, int count)
-{
-	if (!p->wan.xsk || !p->fq_locks_inited)
-		return;
-	pthread_mutex_lock(&p->wan_fq_lock);
-	for (int i = 0; i < count; i++)
-		(void)ne_afxdp_fq_fill_one(&p->wan, p->wan.xsk, addrs[i]);
-	pthread_mutex_unlock(&p->wan_fq_lock);
-}
-
-int ne_afxdp_tx_ing(struct ne_afxdp_pair *p, uint64_t addr, uint32_t len)
-{
-	if (!p->ing.xsk || len == 0 || len > p->frame_size)
-		return -1;
-	ne_afxdp_drain_ing_cq(p);
-
-	uint32_t tx_idx;
-	if (xsk_ring_prod__reserve(&p->ing.tx, 1, &tx_idx) != 1) {
-		ne_afxdp_drain_ing_cq(p);
-		if (xsk_ring_prod__reserve(&p->ing.tx, 1, &tx_idx) != 1) {
-			ne_pkt_logf("c0 tx_ing_resv_fail");
-			return -1;
-		}
-	}
-
-	struct xdp_desc *d = xsk_ring_prod__tx_desc(&p->ing.tx, tx_idx);
-	d->addr = addr;
-	d->len = len;
-	d->options = 0;
-	xsk_ring_prod__submit(&p->ing.tx, 1);
-
-	(void)sendto(xsk_socket__fd(p->ing.xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
-	p->ing.tx_packets++;
-	p->ing.tx_bytes += len;
-	ne_pkt_logf("c0 tx_ing %u %" PRIx64, len, (uint64_t)addr);
-	return 0;
-}
-
 int ne_afxdp_tx_wan(struct ne_afxdp_pair *p, uint64_t addr, uint32_t len)
 {
 	if (!p->wan.xsk || len == 0 || len > p->frame_size)
@@ -350,10 +262,8 @@ int ne_afxdp_tx_wan(struct ne_afxdp_pair *p, uint64_t addr, uint32_t len)
 	uint32_t tx_idx;
 	if (xsk_ring_prod__reserve(&p->wan.tx, 1, &tx_idx) != 1) {
 		ne_afxdp_drain_wan_cq(p);
-		if (xsk_ring_prod__reserve(&p->wan.tx, 1, &tx_idx) != 1) {
-			ne_pkt_logf("c11 tx_wan_resv_fail");
+		if (xsk_ring_prod__reserve(&p->wan.tx, 1, &tx_idx) != 1)
 			return -1;
-		}
 	}
 
 	struct xdp_desc *d = xsk_ring_prod__tx_desc(&p->wan.tx, tx_idx);
@@ -365,7 +275,6 @@ int ne_afxdp_tx_wan(struct ne_afxdp_pair *p, uint64_t addr, uint32_t len)
 	(void)sendto(xsk_socket__fd(p->wan.xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
 	p->wan.tx_packets++;
 	p->wan.tx_bytes += len;
-	ne_pkt_logf("c11 tx_wan %u %" PRIx64, len, (uint64_t)addr);
 	return 0;
 }
 
@@ -532,16 +441,6 @@ int ne_afxdp_pair_open(struct ne_afxdp_pair *p, const struct ne_afxdp_cfg *cfg)
 				     p->ing.ifindex, p->ing.ifname, ing_fd, 0))
 		goto err_bpf_ing;
 
-	int wan_fd = xsk_socket__fd(p->wan.xsk);
-	if (load_sock_map_and_attach(&p->bpf_wan, cfg->bpf_wan, "xdp_wan_redirect_prog", "wan_xsks_map",
-				     p->wan.ifindex, p->wan.ifname, wan_fd, 0)) {
-		iface_xdp_try_detach(p->ing.ifindex, p->ing.ifname);
-		bpf_object__close(p->bpf_ing);
-		p->bpf_ing = NULL;
-		goto err_bpf_ing;
-	}
-
-	ne_pkt_logf("open %s %s", cfg->ing_if, cfg->wan_if);
 	return 0;
 
 err_bpf_ing:
@@ -579,11 +478,6 @@ void ne_afxdp_pair_close(struct ne_afxdp_pair *p)
 	if (!p)
 		return;
 	iface_xdp_try_detach(p->ing.ifindex, p->ing.ifname);
-	iface_xdp_try_detach(p->wan.ifindex, p->wan.ifname);
-	if (p->bpf_wan) {
-		bpf_object__close(p->bpf_wan);
-		p->bpf_wan = NULL;
-	}
 	if (p->bpf_ing) {
 		bpf_object__close(p->bpf_ing);
 		p->bpf_ing = NULL;

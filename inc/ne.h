@@ -16,7 +16,11 @@ struct bpf_object;
 #define NE_LOCAL_BATCH     32u
 #define NE_LOCAL_FRAME     2048u
 #define NE_RECV_BATCH      32
-#define NE_DEFAULT_BPF "bpf/xdp_redirect.o"
+#define NE_DEFAULT_BPF     "bpf/xdp_redirect.o"
+#define NE_RING_CAP        4096u
+#define NE_CPU_INGRESS     0u
+#define NE_CPU_MID         3u
+#define NE_CPU_WAN         11u
 
 struct local_config {
 	char ifname[IF_NAMESIZE];
@@ -88,6 +92,40 @@ int ne_afxdp_recv_ing(struct ne_afxdp_pair *p, void **pkt_ptrs, uint32_t *pkt_le
 int ne_afxdp_tx_wan(struct ne_afxdp_pair *p, uint64_t addr, uint32_t len);
 
 void ne_afxdp_fq_return_ing(struct ne_afxdp_pair *p, uint64_t addr);
+
+struct ne_job {
+	uint64_t umem_addr;
+	uint32_t len;
+};
+
+struct ne_ring {
+	pthread_mutex_t mu;
+	pthread_cond_t nonempty;
+	pthread_cond_t nonfull;
+	struct ne_job *buf;
+	uint32_t cap;
+	uint32_t head;
+	uint32_t tail;
+	uint32_t count;
+};
+
+int ne_ring_init(struct ne_ring *r, uint32_t cap);
+void ne_ring_destroy(struct ne_ring *r);
+int ne_ring_try_push(struct ne_ring *r, const struct ne_job *j);
+int ne_ring_try_pop(struct ne_ring *r, struct ne_job *j);
+void ne_ring_wake_all(struct ne_ring *r);
+
+int ne_pl_ring_push_retry(struct ne_ring *r, const struct ne_job *j, volatile sig_atomic_t *stop);
+
+struct ne_ctx {
+	volatile sig_atomic_t stop;
+	struct ne_afxdp_pair zc;
+	struct ne_ring ing_to_mid;
+	struct ne_ring w_to_wan;
+	pthread_t th_ingress;
+	pthread_t th_mid;
+	pthread_t th_wan;
+};
 
 int ne_run(const char *ingress_if, const char *wan_if, const char *ingress_bpf);
 

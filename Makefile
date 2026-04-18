@@ -8,7 +8,7 @@ BPF_OBJ := bpf/xdp_redirect.o
 
 APP := ne
 
-LINK_SRCS := main.c src/ne_afxdp.c src/ne_run.c
+LINK_SRCS := main.c src/ne_afxdp.c src/ne_threads.c
 LINK_OBJS := $(LINK_SRCS:.c=.o)
 
 PKG_CONFIG ?= pkg-config

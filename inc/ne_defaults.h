@@ -18,8 +18,8 @@
 #define NE_PIPELINE_POOL_SLOTS 8192u
 
 #define NE_CPU_INGRESS       0u
+#define NE_CPU_MID           3u
 #define NE_CPU_WAN           11u
-#define NE_CPU_WORKER_FIRST  1u
 
 #define NE_WAN_IF0 "enp4s0"
 #define NE_WAN_IF1 "enp5s0"

@@ -13,7 +13,6 @@
 #include <bpf/libbpf.h>
 #include <linux/bpf.h>
 #include <linux/if_link.h>
-#include <linux/if_xdp.h>
 
 static int xdp_attach_try(int ifindex, int prog_fd, const char *ifn)
 {
@@ -22,7 +21,7 @@ static int xdp_attach_try(int ifindex, int prog_fd, const char *ifn)
 		return 0;
 	}
 	if (iface_xdp_attach(ifindex, prog_fd, XDP_FLAGS_SKB_MODE) == 0) {
-		fprintf(stderr, "[ne] %s: XDP generic (SKB), AF_XDP copy mode\n", ifn);
+		fprintf(stderr, "[ne] %s: XDP generic (SKB)\n", ifn);
 		return 0;
 	}
 	return -1;
@@ -122,17 +121,11 @@ int ne_afxdp_pair_open(struct ne_afxdp_pair *p, const struct ne_afxdp_cfg *cfg)
 		return -1;
 	}
 
-	unsigned int xbind = XDP_USE_NEED_WAKEUP;
-	if (cfg->af_xdp_copy)
-		xbind |= XDP_COPY;
-	else
-		xbind |= XDP_ZEROCOPY;
-
 	struct xsk_socket_config sock_cfg = {
 		.rx_size = cfg->ring_size,
 		.tx_size = cfg->ring_size,
 		.libbpf_flags = XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD,
-		.bind_flags = xbind,
+		.bind_flags = XDP_ZEROCOPY | XDP_USE_NEED_WAKEUP,
 	};
 
 	int r = xsk_socket__create_shared(&p->ing.xsk, cfg->ing_if, 0, p->umem, &p->ing.rx, &p->ing.tx,
@@ -210,8 +203,7 @@ int ne_afxdp_pair_open(struct ne_afxdp_pair *p, const struct ne_afxdp_cfg *cfg)
 		goto err_bpf_ing;
 	}
 
-	fprintf(stderr, "[ne] shared UMEM AF_XDP %s ingress=%s wan=%s\n",
-		cfg->af_xdp_copy ? "COPY (test)" : "ZC", cfg->ing_if, cfg->wan_if);
+	fprintf(stderr, "[ne] shared UMEM AF_XDP ZC ingress=%s wan=%s\n", cfg->ing_if, cfg->wan_if);
 	return 0;
 
 err_bpf_ing:

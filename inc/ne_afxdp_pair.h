@@ -15,7 +15,6 @@ struct ne_afxdp_cfg {
 	uint32_t ring_size;
 	uint32_t batch_size;
 	uint32_t frame_size;
-	int af_xdp_copy;
 	const char *bpf_ing;
 	const char *bpf_wan;
 };

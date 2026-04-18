@@ -11,17 +11,8 @@ BPF_WAN_OBJ := bpf/xdp_wan_redirect_ne.o
 
 APP := ne
 
-LINK_SRCS := main.c \
-	src/cfg/netdev_xdp_link.c src/cfg/ne_afxdp_pair.c \
-	src/cfg/ne_pkt_ring.c src/cfg/ne_pipeline.c \
-	src/rx/ne_afxdp_fq_pool.c src/rx/ne_afxdp_from_local.c src/rx/ne_afxdp_from_wan.c \
-	src/tx/ne_afxdp_to_local.c src/tx/ne_afxdp_to_wan.c \
-	src/rx/ne_pipeline_core.c src/tx/ne_pipeline_tx.c
+LINK_SRCS := main.c src/ne_afxdp.c src/ne_threads.c
 LINK_OBJS := $(LINK_SRCS:.c=.o)
-ALL_OBJS := $(LINK_OBJS)
-
-BPF_CFLAGS := -O2 -g -Wall -Wextra -target bpf \
-	-D__TARGET_ARCH_$(ARCH)
 
 PKG_CONFIG ?= pkg-config
 LIBXDP_CFLAGS := $(shell $(PKG_CONFIG) --cflags libxdp 2>/dev/null)
@@ -37,6 +28,9 @@ USR_CFLAGS := -O2 -g -Wall -Wextra -Iinc
 USR_LIBS := -lxdp -lbpf -lelf -lz -lpthread
 endif
 
+BPF_CFLAGS := -O2 -g -Wall -Wextra -target bpf \
+	-D__TARGET_ARCH_$(ARCH)
+
 .PHONY: all clean
 
 all: $(BPF_OBJ) $(BPF_WAN_OBJ) $(APP)
@@ -47,7 +41,7 @@ $(BPF_OBJ): $(BPF_SRC)
 $(BPF_WAN_OBJ): $(BPF_WAN_SRC)
 	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 
-$(ALL_OBJS): %.o: %.c
+$(LINK_OBJS): %.o: %.c inc/ne.h
 	$(CC) $(USR_CFLAGS) -c $< -o $@
 
 $(APP): $(LINK_OBJS)
@@ -56,3 +50,4 @@ $(APP): $(LINK_OBJS)
 clean:
 	rm -f $(APP)
 	find . -name '*.o' -type f -delete
+	find src -type d -empty -delete 2>/dev/null || true

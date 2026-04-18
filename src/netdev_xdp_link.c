@@ -1,7 +1,8 @@
-#include "../inc/ingress_afxdp.h"
 #include "../inc/netdev_xdp_internal.h"
 
+#include <bpf/libbpf.h>
 #include <errno.h>
+#include <linux/if_link.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>

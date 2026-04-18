@@ -9,10 +9,10 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include <linux/bpf.h>
-
-#include "ingress_afxdp.h"
+#include <linux/if_link.h>
 
 static int xdp_attach_try(int ifindex, int prog_fd, const char *ifn)
 {
